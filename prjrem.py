@@ -1,21 +1,24 @@
-import json, cmd, pyperclip, secrets, string, re
+import json, cmd, pyperclip, secrets, string, re, getpass
 from Crypto.Cipher import AES
 from pathlib import Path
 
 
 class PrjRem:
-    CHAR_SET = '!@#$%s%s%s' % (string.ascii_lowercase, string.digits, string.ascii_uppercase)
+    SYMBOLS = '!@#$/?;:'
+    CHAR_SET = '%s%s%s%s' % (SYMBOLS, string.ascii_lowercase, string.digits, string.ascii_uppercase)
     CHAR_SET_LENGTH = len(CHAR_SET) - 1
-    CHAR_SET_RE = re.compile('([!@#$]|[0-9]|[a-z]|[A-Z])+')
+    CHAR_SET_RE = re.compile('([%s]|[0-9]|[a-z]|[A-Z])+' % SYMBOLS)
+    ENC = 'utf_8'
     PATH_HOME = Path.home().as_posix() + '/.prjrem'
     PATH_CONF = PATH_HOME + '/config'
-    PSW = b'1234123412341234'
 
     def __init__(self):
         self.rng = secrets.SystemRandom()
         self.configDefaults = {'location': self.PATH_HOME + '/prjremDat'}
         self.config = self.configDefaults
         self.passwords = dict()
+        self.psw = b'1234123412341234'
+        self.error = 'Unknown error'
 
     def getSortedKeys(self):
         '''Password keys in a sorted list'''
@@ -48,7 +51,8 @@ class PrjRem:
             f.write(json.dumps(self.config))
 
     def readPass(self):
-        '''Open password file and attempt decryption'''
+        '''Open password file and attempt decryption\n
+        Returns 0 on success'''
         if not Path(self.config['location']).exists():
             return 1
 
@@ -56,7 +60,7 @@ class PrjRem:
             bStream = f.read()
 
         try:
-            cipher = AES.new(self.PSW, AES.MODE_CBC, bStream[:16])
+            cipher = AES.new(bytearray(self.psw, self.ENC), AES.MODE_CBC, bStream[:16])
             self.passwords = json.loads(cipher.decrypt(bStream[16:]))
             return 0
         except Exception as e:
@@ -67,24 +71,32 @@ class PrjRem:
     def savePass(self):
         '''Convert passwords to JSON and encrypt with CBC\n
         Use a random IV, prepend it and use trailing 0's as padding'''
-        cipher = AES.new(self.PSW, AES.MODE_CBC, bytearray(self.sequence(16), 'utf_8'))
+        cipher = AES.new(bytearray(self.psw, self.ENC), AES.MODE_CBC, bytearray(self.sequence(16), self.ENC))
         stream = json.dumps(self.passwords)
         stream.join('0' * (32 - (len(stream) % 16)))
-        bStream = cipher.encrypt(bytearray(stream, 'utf_8'))
+        bStream = cipher.encrypt(bytearray(stream, self.ENC))
         with Path(self.config['location']).open(mode='wb') as f:
             f.write(cipher.iv)
             f.write(bStream)
 
     # Commands
     def make(self, usr, psw=None):
-        '''Creates a new password'''
+        '''Creates a new password\n
+        Returns 0 on success'''
+        self.error = 'Arguments may only contain numbers, letters and the special characters: %s' % self.SYMBOLS
+        if self.isLegit(usr) is False:
+            return 1
         if psw is None:
             psw = self.sequence(16)
+        elif self.isLegit(psw) is False:
+            return 1
         
         self.passwords[usr] = psw
+        return 0
 
     def retrieve(self, identifier):
-        '''Looks up a password by key or number'''
+        '''Looks up a password by key or number\n
+        Returns Tuple with Key and Password or None'''
         if identifier in self.passwords:
             return (identifier, self.passwords[identifier])
         
@@ -105,17 +117,6 @@ class PrjRemCMD(cmd.Cmd):
     prompt = '> '
     file = None
 
-    def preloop(self):
-        self.program = PrjRem()
-        self.program.readConf()
-
-    def default(self, line):
-        psw = self.program.retrieve(line)
-        if psw is None:
-            print(self.program.error)
-        else:
-            print('%s\n%s' % (psw[0], psw[1]))
-
     def emptyline(self):
         self.do_help(None)
 
@@ -123,11 +124,51 @@ class PrjRemCMD(cmd.Cmd):
         return True
 
     def do_exit(self, e):
+        '''Write passwords to set location and exit the program'''
+        print('Writing to file. Please wait.')
+        self.program.savePass()
         return True
     
     do_EOF = do_exit
     do_q = do_exit
     do_quit = do_exit
+
+    def preloop(self):
+        '''Read config, prompt for encryption key and decrypt password file'''
+        self.program = PrjRem()
+        self.program.readConf()
+        # self.program.psw = getpass.getpass('Enter password: ')
+        if 0 == self.program.readPass():
+            self.do_list('')
+            print('Loaded %s' % self.program.config['location'])
+
+    def default(self, line):
+        '''Try and interpret line as a key to a stored password'''
+        self.do_retrieve(line)
+
+    def do_retrieve(self, line):
+        '''Try and interpret line as a 'usr' key to retrieve a password 
+        \nRetrieve is the default line command.'''
+        psw = self.program.retrieve(line)
+        if psw is None:
+            print(self.program.error)
+        else:
+            print('%s\n%s' % (psw[0], psw[1]))
+            pyperclip.copy(psw[1])
+
+    def do_make(self, arg, psw = None):
+        '''make usr [psw]\n
+        Creates a new password stored under the "usr" key.\n
+        "psw" is optional. If left out a random password is generated.'''
+        args = arg.split()
+        if len(args) > 0:
+            if len(args) > 1:
+                psw = args[1]
+            if 0 == self.program.make(args[0], psw):
+                print('%s made!' % args[0])
+                pyperclip.copy(self.program.passwords[args[0]])
+            else:
+                print(self.program.error)
 
     def do_gen(self, arg):
         print(self.program.sequence(16))
