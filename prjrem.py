@@ -11,11 +11,11 @@ class PrjRem:
     ENC = 'utf_8'
     PATH_HOME = Path.home().as_posix() + '/.prjrem'
     PATH_CONF = PATH_HOME + '/config'
+    DEFAULT_CONFIG = {'location': PATH_HOME + '/prjremDat'}
 
     def __init__(self):
         self.rng = secrets.SystemRandom()
-        self.configDefaults = {'location': self.PATH_HOME + '/prjremDat'}
-        self.config = self.configDefaults
+        self.config = self.DEFAULT_CONFIG
         self.passwords = dict()
         self.psw = '0000000000000000'
         self.error = 'Unknown error'
@@ -25,7 +25,20 @@ class PrjRem:
         return sorted(self.passwords.keys()) 
 
     def setPassLocation(self, path):
-        self.config['location'] = path
+        '''Check if path is valid before committing to the configuration'''
+        try:
+            pp = Path(path)
+            ppdir = pp.parent
+            ppdir.resolve()
+        except Exception as e:
+            self.error = e
+            return 1
+
+        if ppdir.is_dir():
+            self.config['location'] = pp.as_posix()
+            return 0
+
+        self.error = 'Not a valid directory.\n%s' % ppdir
 
     def setPsw(self, psw):
         '''Set a password for the context. Also pad it'''
@@ -48,6 +61,7 @@ class PrjRem:
 
     # Interop
     def readConf(self):
+        '''Read config file or create the home folder'''
         if Path(self.PATH_CONF).exists():
             with Path(self.PATH_CONF).open() as f:
                 for k,v in json.load(f).items():
@@ -56,12 +70,13 @@ class PrjRem:
             Path(self.PATH_HOME).mkdir(exist_ok=True)
 
     def saveConf(self):
+        '''Dump dict to JSON file'''
         with Path(self.PATH_CONF).open(mode='w') as f:
             f.write(json.dumps(self.config))
 
     def readPass(self):
         '''Open password file and attempt decryption\n
-        Returns 0 on success'''
+        Return 0 on success'''
         if not Path(self.config['location']).exists():
             return 1
 
@@ -98,8 +113,8 @@ class PrjRem:
 
     # Commands
     def cmd_make(self, usr, psw=None):
-        '''Creates a new password\n
-        Returns 0 on success'''
+        '''Create a new password\n
+        Return 0 on success'''
         self.error = 'Arguments may only contain numbers, letters and the special characters: %s' % self.SYMBOLS
         if self.isLegit(usr) is False:
             return 1
@@ -112,11 +127,11 @@ class PrjRem:
         return 0
 
     def cmd_retrieve(self, identifier):
-        '''Looks up a password by key or number\n
-        Returns Tuple with Key and Password or None'''
+        '''Look up a password by key or number\n
+        Return None or a tuple with key and password'''
         if identifier in self.passwords:
             return (identifier, self.passwords[identifier])
-        
+
         try:
             num = int(identifier)
             identifier = self.getSortedKeys()[num]
@@ -125,6 +140,14 @@ class PrjRem:
             self.error = e
 
         return None
+
+    def cmd_delete(self, usr):
+        '''Delete password'''
+        if usr in self.passwords:
+            del self.passwords[usr]
+            return 0
+
+        return 1
 
     def cmd_listToPrint(self):
         '''Formatted string with newlines for each sorted key'''
@@ -147,14 +170,9 @@ class PrjRemCMD(cmd.Cmd):
         '''Read config, prompt for encryption key and decrypt password file'''
         self.program = PrjRem()
         self.program.readConf()
-        self.program.setPsw(getpass.getpass('Enter password: '))
-        print('Attempting to read:\n    %s' % self.program.config['location'])
-        if 0 == self.program.readPass():
-            print('Success, listing passwords\n')
-            self.do_list('')
-            self.prompt = 'PrjRem %s> ' % self.program.config['location']
-        else:
-            print('Something went wrong:\n    %s' % self.program.error)
+        self.prompt = 'PrjRem %s> ' % self.program.config['location']
+        print('Opening: %s' % self.program.config['location'])
+        self.do_open('')
 
     def default(self, line):
         '''Try and interpret line as a key to a stored password'''
@@ -174,6 +192,18 @@ class PrjRemCMD(cmd.Cmd):
             print('%s\n%s' % (psw[0], psw[1]))
             pyperclip.copy(psw[1])
 
+    def do_open(self, arg):
+        '''
+        > open
+        Prompt for password and attempt to read the current path.
+        '''
+        self.do_psw('')
+        if 0 == self.program.readPass():
+            print('Listing passwords\n')
+            self.do_list('')
+        else:
+            print('Wrong password. Do "open" to try again or see "psw" and "loc" to use another file.')
+
     def do_make(self, arg, psw = None):
         '''
         > make usr [psw]
@@ -189,6 +219,18 @@ class PrjRemCMD(cmd.Cmd):
                 pyperclip.copy(self.program.passwords[args[0]])
             else:
                 print(self.program.error)
+
+    def do_del(self, arg):
+        '''
+        > del usr
+        Remove stored password by usr key.
+        '''
+        args = arg.split()
+        if len(args) > 0:
+            if 0 == self.program.cmd_delete(args[0]):
+                print('Deleted')
+            else:
+                print('Key not found')
 
     def do_list(self, arg):
         '''
@@ -212,10 +254,12 @@ class PrjRemCMD(cmd.Cmd):
         > loc path
         Changes password file location.
         '''
-        args = arg.split()
-        if len(args) > 0:
-            self.program.setPassLocation(args[0])
-            self.prompt = 'PrjRem %s> ' % self.program.config['location']
+        if len(arg) > 0:
+            if 0 == self.program.setPassLocation(arg):
+                self.prompt = 'PrjRem %s> ' % self.program.config['location']
+                self.program.saveConf()
+            else:
+                print(self.program.error)
 
     def do_exit(self, e):
         '''
