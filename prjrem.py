@@ -156,7 +156,7 @@ class PrjRem:
 
 # UI
 class PrjRemCMD(cmd.Cmd):
-    intro = '====\nProject Remembrance\'s Commandline Interface\n===='
+    intro = '\n====\nProject Remembrance\'s Commandline Interface\n====\n'
     prompt = 'PrjRem no-file> '
     file = None
 
@@ -189,7 +189,7 @@ class PrjRemCMD(cmd.Cmd):
         if psw is None:
             print(self.program.error)
         else:
-            print('%s\n%s' % (psw[0], psw[1]))
+            print('Retrieved "%s".\nPassword copied to clipboard.\n' % psw[0])
             pyperclip.copy(psw[1])
 
     def do_open(self, arg):
@@ -198,10 +198,7 @@ class PrjRemCMD(cmd.Cmd):
         Prompt for password and attempt to read the current path.
         '''
         self.do_psw('')
-        if 0 == self.program.readPass():
-            print('Listing passwords\n')
-            self.do_list('')
-        else:
+        if 0 < self.program.readPass():
             print('Wrong password. Do "open" to try again or see "psw" and "loc" to use another file.')
 
     def do_make(self, arg, psw = None):
@@ -266,11 +263,11 @@ class PrjRemCMD(cmd.Cmd):
         Write passwords to current location and exit the program.
         '''
         if len(self.program.passwords) > 0:
-            print('Writing to file. Please wait.')
+            print('Writing to file. Exiting.')
             if 0 < self.program.savePass():
                 print(self.program.error)
-            else:
-                return True
+
+        return True
 
     do_EOF = do_exit
     do_q = do_exit
