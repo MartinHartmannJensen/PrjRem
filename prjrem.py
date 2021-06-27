@@ -1,6 +1,6 @@
-import json, cmd, pyperclip, secrets, string, re, getpass
+import json, cmd, pyperclip, secrets, string, re, getpass, subprocess
 from Crypto.Cipher import AES
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 
 class PrjRem:
@@ -10,8 +10,10 @@ class PrjRem:
     CHAR_SET_RE = re.compile('([%s]|[0-9]|[a-z]|[A-Z])+' % SYMBOLS)
     ENC = 'utf_8'
     PATH_HOME = Path.home().as_posix() + '/.prjrem'
-    PATH_CONF = PATH_HOME + '/config'
-    DEFAULT_CONFIG = {'location': PATH_HOME + '/prjremDat'}
+    PATH_CONF = PATH_HOME + '/config.json'
+    PATH_TEMPFILE = PATH_HOME + '/description'
+    DEFAULT_CONFIG = {'location': PATH_HOME + '/prjremDat', 'editor': None}
+    STATUS = {'NO-FILE': 0, 'LOCKED': 1, 'UNLOCKED': 2, 'NEW': 3}
 
     def __init__(self):
         self.rng = secrets.SystemRandom()
@@ -19,6 +21,7 @@ class PrjRem:
         self.passwords = dict()
         self.psw = '0000000000000000'
         self.error = 'Unknown error'
+        self.filestatus = self.STATUS['NO-FILE']
 
     def getSortedKeys(self):
         '''Password keys in a sorted list'''
@@ -32,10 +35,14 @@ class PrjRem:
             ppdir.resolve()
         except Exception as e:
             self.error = e
+            self.filestatus = self.STATUS['NO-FILE']
             return 1
 
         if ppdir.is_dir():
             self.config['location'] = pp.as_posix()
+            if pp.is_file:
+                self.filestatus = self.STATUS['NEW']
+
             return 0
 
         self.error = 'Not a valid directory.\n%s' % ppdir
@@ -74,6 +81,28 @@ class PrjRem:
         with Path(self.PATH_CONF).open(mode='w') as f:
             f.write(json.dumps(self.config))
 
+    def oldReadPass(self):
+        '''Reads password files from version 1.0\n
+        Return 0 on success'''
+        if not Path(self.config['location']).exists():
+            return 1
+
+        with Path(self.config['location']).open(mode='rb') as f:
+            es = f.read()
+
+        try:
+            cipher = AES.new(bytearray(self.psw, self.ENC), AES.MODE_CBC, es[:16])
+            bs = cipher.decrypt(es[16:])
+            oldPasswords = json.loads(bs.rstrip(b'0'))
+            for key, val in oldPasswords.items():
+                self.passwords[key] = [val, None]
+            self.setPassLocation()
+            return 0
+        except Exception as e:
+            self.error = e
+
+        return 1
+
     def readPass(self):
         '''Open password file and attempt decryption\n
         Return 0 on success'''
@@ -87,9 +116,11 @@ class PrjRem:
             cipher = AES.new(bytearray(self.psw, self.ENC), AES.MODE_CBC, es[:16])
             bs = cipher.decrypt(es[16:])
             self.passwords = json.loads(bs.rstrip(b'0'))
+            self.filestatus = self.STATUS['UNLOCKED']
             return 0
         except Exception as e:
             self.error = e
+            self.filestatus = self.STATUS['LOCKED']
 
         return 1
 
@@ -112,7 +143,7 @@ class PrjRem:
         return 0
 
     # Commands
-    def cmd_make(self, usr, psw=None):
+    def cmd_make(self, usr, psw=None, desc=None):
         '''Create a new password\n
         Return 0 on success'''
         self.error = 'Arguments may only contain numbers, letters and the special characters: %s' % self.SYMBOLS
@@ -123,23 +154,43 @@ class PrjRem:
         elif self.isLegit(psw) is False:
             return 1
         
-        self.passwords[usr] = psw
+        self.passwords[usr] = [psw, desc]
         return 0
 
     def cmd_retrieve(self, identifier):
         '''Look up a password by key or number\n
-        Return None or a tuple with key and password'''
-        if identifier in self.passwords:
-            return (identifier, self.passwords[identifier])
+        Return None or a tuple with key, password and description'''
+        if identifier not in self.passwords:
+            try:
+                num = int(identifier)
+                identifier = self.getSortedKeys()[num]
+            except Exception as e:
+                self.error = e
+                return None
+
+        return (identifier, self.passwords[identifier][0], self.passwords[identifier][1])
+
+    def cmd_describe(self, identifier):
+        '''Open a textfile with the designated editor. Command waits for editor to exit\n
+        and saves the string to the password description'''
+        if self.cmd_retrieve(identifier) is None:
+            return 1
+
+        with Path(self.PATH_TEMPFILE).open(mode='w') as f:
+            f.write(str(self.passwords[identifier][1]))
 
         try:
-            num = int(identifier)
-            identifier = self.getSortedKeys()[num]
-            return (identifier, self.passwords[identifier])
+            editor = str(PureWindowsPath(self.config['editor']))
+            descfile = str(PureWindowsPath(self.PATH_TEMPFILE))
+            subprocess.call([editor, descfile])
         except Exception as e:
             self.error = e
+            return 1
+        
+        with Path(self.PATH_TEMPFILE).open() as f:
+            self.passwords[identifier][1] = f.read()
 
-        return None
+        return 0
 
     def cmd_delete(self, usr):
         '''Delete password'''
@@ -156,9 +207,21 @@ class PrjRem:
 
 # UI
 class PrjRemCMD(cmd.Cmd):
-    intro = '\n====\nProject Remembrance\'s Commandline Interface\n====\n'
     prompt = 'PrjRem no-file> '
     file = None
+
+    # The most recent command arguments are split into these 2 lists
+    words = list()
+    switches = list()
+
+    def setprompt(self):
+        stat = ''
+        if self.program.filestatus != 2:
+            for k,v in self.program.STATUS.items():
+                if self.program.filestatus == v:
+                    stat = k
+        
+        self.prompt = '\nPrjRem %s %s> ' % (stat, self.program.config['location'])
 
     def emptyline(self):
         self.do_help(None)
@@ -170,9 +233,20 @@ class PrjRemCMD(cmd.Cmd):
         '''Read config, prompt for encryption key and decrypt password file'''
         self.program = PrjRem()
         self.program.readConf()
-        self.prompt = 'PrjRem %s> ' % self.program.config['location']
-        print('Opening: %s' % self.program.config['location'])
+        print('\n====\nProject Remembrance\'s Commandline Interface\n====\n')
         self.do_open('')
+
+    def precmd(self, line):
+        '''Split arguments into words and switches.'''
+        self.words = line.split()
+        if len(self.words) > 0:
+            del self.words[0]
+
+        self.switches = re.findall('-\w+', line)
+        for a in self.switches:
+            self.words.remove(a)
+
+        return line
 
     def default(self, line):
         '''Try and interpret line as a key to a stored password'''
@@ -189,32 +263,67 @@ class PrjRemCMD(cmd.Cmd):
         if psw is None:
             print(self.program.error)
         else:
-            print('Retrieved "%s".\nPassword copied to clipboard.\n' % psw[0])
+            print('Retrieved "%s" and copied password to clipboard.\nDescription:\n--\n%s\n' % (psw[0], psw[2]))
             pyperclip.copy(psw[1])
+
+    def do_openold(self, arg):
+        '''
+        > openold
+        Open version 1 password files.
+        Prompt for password and attempt to read the current path.
+        '''
+        self.do_psw('')
+        if 0 < self.program.oldReadPass():
+            print('Wrong password. Do "openold" to try again or see "psw" and "loc" to use another file.')
+        else:
+            print('WARNING: old filepath is still active. Change location in order to not overwrite.')
 
     def do_open(self, arg):
         '''
         > open
         Prompt for password and attempt to read the current path.
         '''
+        print('Opening: %s' % self.program.config['location'])
         self.do_psw('')
         if 0 < self.program.readPass():
             print('Wrong password. Do "open" to try again or see "psw" and "loc" to use another file.')
+        self.setprompt()
 
-    def do_make(self, arg, psw = None):
+    def do_make(self, arg):
         '''
-        > make usr [psw]
+        > make usr [-m | -manual] [description]+
         Create a new password which is stored under the "usr" key.
-        "psw" is optional. If left out a random password is generated.
+        Use the manual switch to type the password instead of generating one.
+        Extra arguments will be treated as text to be added to the description.
+        To do a longer description use the command "describe".
         '''
-        args = arg.split()
-        if len(args) > 0:
-            if len(args) > 1:
-                psw = args[1]
-            if 0 == self.program.cmd_make(args[0], psw):
-                print('%s made!' % args[0])
-                pyperclip.copy(self.program.passwords[args[0]])
+        if len(self.words) > 0:
+            usr = self.words[0]
+            description = ' '.join([str(x) for x in self.words[1:]])
+            if '-m' in self.switches or '-manual' in self.switches:
+                psw = ''
+                while True:
+                    psw = getpass.getpass('Enter password: ' )
+                    if len(psw.strip()) > 0:
+                        break
+
+                if 0 < self.program.cmd_make(usr, psw, description):
+                    print(self.program.error)
+
             else:
+                if 0 < self.program.cmd_make(usr, None, description):
+                    print(self.program.error)
+
+            print('%s made!' % usr)
+            pyperclip.copy(self.program.passwords[usr][0])
+
+    def do_describe(self, arg):
+        '''
+        > describe usr
+        Add description to an existing "usr" key.
+        '''
+        if len(self.words) > 0:
+            if 0 < self.program.cmd_describe(self.words[0]):
                 print(self.program.error)
 
     def do_del(self, arg):
@@ -222,9 +331,8 @@ class PrjRemCMD(cmd.Cmd):
         > del usr
         Remove stored password by usr key.
         '''
-        args = arg.split()
-        if len(args) > 0:
-            if 0 == self.program.cmd_delete(args[0]):
+        if len(self.words) > 0:
+            if 0 == self.program.cmd_delete(self.words[0]):
                 print('Deleted')
             else:
                 print('Key not found')
@@ -253,21 +361,29 @@ class PrjRemCMD(cmd.Cmd):
         '''
         if len(arg) > 0:
             if 0 == self.program.setPassLocation(arg):
-                self.prompt = 'PrjRem %s> ' % self.program.config['location']
+                self.setprompt()
                 self.program.saveConf()
             else:
                 print(self.program.error)
 
     def do_exit(self, e):
         '''
+        > exit | quit | q | EOF [-n | -nosave]
         Write passwords to current location and exit the program.
+        Pass the -nosave switch to exit without saving current session to password file.
         '''
-        if len(self.program.passwords) > 0:
-            print('Writing to file. Exiting.')
+        self.program.saveConf()
+        if '-n' in self.switches or '-nosave' in self.switches:
+            return True
+
+        if len(self.program.passwords) > 0 and self.program.filestatus > 1:
+            print('Writing to file. Exiting.\n')
             if 0 < self.program.savePass():
                 print(self.program.error)
 
-        return True
+            return True
+        
+        print('Cannot exit. No password file chosen.\nTo force an exit, use the -nosave switch. Details under "help exit"')
 
     do_EOF = do_exit
     do_q = do_exit
