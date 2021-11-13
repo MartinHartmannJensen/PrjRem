@@ -7,10 +7,11 @@ A reboot of a previous PrjRem. The focus before was on using true randomness for
 
 ## Future
 
-#### Remote storage
-
-Password services offer storage you can reach anywhere. I want the option to use SSH for storing on other personal machines as a start
 
 #### Fancy user interface
 
 Program is set up as command based right now. Should be easy to build an UI with one of those cool kids' frameworks.
+
+#### Android support
+
+Remote storage synchronization via LAN on an always-on device.

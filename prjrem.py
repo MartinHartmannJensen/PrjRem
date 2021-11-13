@@ -1,6 +1,37 @@
 import json, cmd, pyperclip, secrets, string, re, getpass, subprocess
 from Crypto.Cipher import AES
+from Crypto.Protocol import KDF
 from pathlib import Path, PureWindowsPath
+
+class PrjRemLegacy:
+    def __init__(self):
+        self.passwords = dict()
+        self.error = 'clean'
+
+    def readVersion2(self, location, psw):
+        '''Open password files from version 2.0\n
+        Return 0 on success'''
+        if psw == '':
+            self.error = 'Abort!'
+            return 1
+
+        psw = ''.join([psw, '0' * (32 - (len(psw) % 16))])
+
+        if not Path(location).exists():
+            return 1
+
+        with Path(location).open(mode='rb') as f:
+            es = f.read()
+
+        try:
+            cipher = AES.new(bytearray(psw, 'utf_8'), AES.MODE_CBC, es[:16])
+            bs = cipher.decrypt(es[16:])
+            self.passwords = json.loads(bs.rstrip(b'0'))
+            return 0
+        except Exception as e:
+            self.error = e
+
+        return 1
 
 
 class PrjRem:
@@ -19,7 +50,7 @@ class PrjRem:
         self.rng = secrets.SystemRandom()
         self.config = self.DEFAULT_CONFIG
         self.passwords = dict()
-        self.psw = '0000000000000000'
+        self.psw = None
         self.error = 'Unknown error'
         self.filestatus = self.STATUS['NO-FILE']
 
@@ -48,12 +79,12 @@ class PrjRem:
         self.error = 'Not a valid directory.\n%s' % ppdir
 
     def setPsw(self, psw):
-        '''Set a password for the context. Also pad it'''
+        '''Generate a derived key for encryption. Save it to self.psw'''
         if psw == '':
             self.error = 'Abort!'
             return 1
 
-        self.psw = ''.join([psw, '0' * (32 - (len(psw) % 16))])
+        self.psw = KDF.scrypt(psw, "takesawhilebutishardtobruteforce", 32, N=2**20, r=8, p=1)
         return 0
 
     def sequence(self, length):
@@ -81,28 +112,6 @@ class PrjRem:
         with Path(self.PATH_CONF).open(mode='w') as f:
             f.write(json.dumps(self.config))
 
-    def oldReadPass(self):
-        '''Reads password files from version 1.0\n
-        Return 0 on success'''
-        if not Path(self.config['location']).exists():
-            return 1
-
-        with Path(self.config['location']).open(mode='rb') as f:
-            es = f.read()
-
-        try:
-            cipher = AES.new(bytearray(self.psw, self.ENC), AES.MODE_CBC, es[:16])
-            bs = cipher.decrypt(es[16:])
-            oldPasswords = json.loads(bs.rstrip(b'0'))
-            for key, val in oldPasswords.items():
-                self.passwords[key] = [val, None]
-            self.setPassLocation()
-            return 0
-        except Exception as e:
-            self.error = e
-
-        return 1
-
     def readPass(self):
         '''Open password file and attempt decryption\n
         Return 0 on success'''
@@ -113,9 +122,15 @@ class PrjRem:
             es = f.read()
 
         try:
-            cipher = AES.new(bytearray(self.psw, self.ENC), AES.MODE_CBC, es[:16])
-            bs = cipher.decrypt(es[16:])
-            self.passwords = json.loads(bs.rstrip(b'0'))
+            cipher = AES.new(self.psw, AES.MODE_CBC, es[:16])
+            bs = cipher.decrypt(es[16:]).decode()
+            # Strip padding at end of bytestream before json object marker '}'
+            for i in range(len(bs) - 1, 0, -1):
+                if(bs[i] == '}'):
+                    bs = bs[:i + 1]
+                    break
+
+            self.passwords = json.loads(bs)
             self.filestatus = self.STATUS['UNLOCKED']
             return 0
         except Exception as e:
@@ -126,12 +141,12 @@ class PrjRem:
 
     def savePass(self):
         '''Convert passwords to JSON and encrypt with CBC\n
-        Use a random IV, prepend it and use trailing 0's as padding'''
+        Sequence() is used for random padding. IV is prepended lastly.'''
         iv = bytearray(self.sequence(16), self.ENC)
-        cipher = AES.new(bytearray(self.psw, self.ENC), AES.MODE_CBC, iv)
-        stream = json.dumps(self.passwords)
-        stream = ''.join([stream, '0' * (32 - (len(stream) % 16))])
-        es = cipher.encrypt(bytearray(stream, self.ENC))
+        cipher = AES.new(self.psw, AES.MODE_CBC, iv)
+        stream = bytearray(json.dumps(self.passwords), self.ENC)
+        stream = stream + bytearray(self.sequence(16 - (len(stream) % 16)), self.ENC)
+        es = cipher.encrypt(stream)
         try:
             with Path(self.config['location']).open(mode='wb') as f:
                 f.write(iv)
@@ -269,14 +284,19 @@ class PrjRemCMD(cmd.Cmd):
     def do_openold(self, arg):
         '''
         > openold
-        Open version 1 password files.
+        Open version 2 password files.
         Prompt for password and attempt to read the current path.
         '''
-        self.do_psw('')
-        if 0 < self.program.oldReadPass():
+        prjl = PrjRemLegacy()
+        psw = getpass.getpass('Type password: ')
+        if 0 < prjl.readVersion2(self.program.config['location'], psw):
             print('Wrong password. Do "openold" to try again or see "psw" and "loc" to use another file.')
         else:
-            print('WARNING: old filepath is still active. Change location in order to not overwrite.')
+            self.program.setPsw(psw)
+            self.program.passwords = prjl.passwords
+            self.program.filestatus = self.program.STATUS['UNLOCKED']
+            self.setprompt()
+            print('Read successful!\nWARNING: old filepath is still active. Change location if not to overwrite.')
 
     def do_open(self, arg):
         '''
