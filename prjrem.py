@@ -1,4 +1,4 @@
-import json, cmd, pyperclip, secrets, string, re, getpass, subprocess
+import json, cmd, pyperclip, secrets, string, re, getpass, subprocess, sys
 from Crypto.Cipher import AES
 from Crypto.Protocol import KDF
 from pathlib import Path, PureWindowsPath
@@ -40,10 +40,11 @@ class PrjRem:
     CHAR_SET_LENGTH = len(CHAR_SET) - 1
     CHAR_SET_RE = re.compile('([%s]|[0-9]|[a-z]|[A-Z])+' % SYMBOLS)
     ENC = 'utf_8'
-    PATH_HOME = Path.home().as_posix() + '/.prjrem'
+    PATH_PYINSTALLERHOME = Path(sys.executable).parent
+    PATH_HOME = PATH_PYINSTALLERHOME.as_posix() + '/.prjrem'
     PATH_CONF = PATH_HOME + '/config.json'
     PATH_TEMPFILE = PATH_HOME + '/description'
-    DEFAULT_CONFIG = {'location': PATH_HOME + '/prjremDat', 'editor': None}
+    DEFAULT_CONFIG = {'location': PATH_HOME + '/prjrem', 'editor': 'notepad'}
     STATUS = {'NO-FILE': 0, 'LOCKED': 1, 'UNLOCKED': 2, 'NEW': 3}
 
     def __init__(self):
