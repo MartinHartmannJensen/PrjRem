@@ -35,7 +35,7 @@ class PrjRemLegacy:
 
 
 class PrjRem:
-    SYMBOLS = '!@#$/?;:'
+    SYMBOLS = '!@#$/?;:%^&*'
     CHAR_SET = '%s%s%s%s' % (SYMBOLS, string.ascii_lowercase, string.digits, string.ascii_uppercase)
     CHAR_SET_LENGTH = len(CHAR_SET) - 1
     CHAR_SET_RE = re.compile('([%s]|[0-9]|[a-z]|[A-Z])+' % SYMBOLS)
