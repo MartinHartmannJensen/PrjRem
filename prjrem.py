@@ -45,6 +45,7 @@ class PrjRem:
     PATH_TEMPFILE = PATH_HOME + '/description'
     DEFAULT_CONFIG = {'location': PATH_HOME + '/prjremDat', 'editor': None}
     STATUS = {'NO-FILE': 0, 'LOCKED': 1, 'UNLOCKED': 2, 'NEW': 3}
+    PSW_GEN_DEFAULT_LEN = 16
 
     def __init__(self):
         self.rng = secrets.SystemRandom()
@@ -158,14 +159,19 @@ class PrjRem:
         return 0
 
     # Commands
-    def cmd_make(self, usr, psw=None, desc=None):
+    def cmd_make(self, usr, psw=None, desc=None, length=PSW_GEN_DEFAULT_LEN):
         '''Create a new password\n
         Return 0 on success'''
         self.error = 'Arguments may only contain numbers, letters and the special characters: %s' % self.SYMBOLS
         if self.isLegit(usr) is False:
             return 1
         if psw is None:
-            psw = self.sequence(16)
+            try:
+                length = int(length)
+            except Exception:
+                length = self.PSW_GEN_DEFAULT_LEN
+
+            psw = self.sequence(length)
         elif self.isLegit(psw) is False:
             return 1
         
@@ -278,7 +284,7 @@ class PrjRemCMD(cmd.Cmd):
         if psw is None:
             print(self.program.error)
         else:
-            print('Retrieved "%s" and copied password to clipboard.\nDescription:\n--\n%s\n' % (psw[0], psw[2]))
+            print('Retrieved "%s" and copied password to clipboard.\n--\n%s\n' % (psw[0], psw[2]))
             pyperclip.copy(psw[1])
 
     def do_openold(self, arg):
@@ -331,7 +337,8 @@ class PrjRemCMD(cmd.Cmd):
                     print(self.program.error)
 
             else:
-                if 0 < self.program.cmd_make(usr, None, description):
+                l = input('Password length (default %s): ' % self.program.PSW_GEN_DEFAULT_LEN)
+                if 0 < self.program.cmd_make(usr, None, description, l):
                     print(self.program.error)
 
             print('%s made!' % usr)
