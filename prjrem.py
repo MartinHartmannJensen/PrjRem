@@ -166,8 +166,11 @@ class PrjRem:
         if self.isLegit(usr) is False:
             return 1
         if psw is None:
-            if type(length) is not int:
+            try:
+                length = int(length)
+            except Exception:
                 length = self.PSW_GEN_DEFAULT_LEN
+
             psw = self.sequence(length)
         elif self.isLegit(psw) is False:
             return 1
