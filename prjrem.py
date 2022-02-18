@@ -40,10 +40,10 @@ class PrjRem:
     CHAR_SET_LENGTH = len(CHAR_SET) - 1
     CHAR_SET_RE = re.compile('([%s]|[0-9]|[a-z]|[A-Z])+' % SYMBOLS)
     ENC = 'utf_8'
-    PATH_HOME = Path.home().as_posix() + '/.prjrem'
+    PATH_HOME = Path(__file__).parent.absolute().as_posix() + '/.prjremTest'
     PATH_CONF = PATH_HOME + '/config.json'
     PATH_TEMPFILE = PATH_HOME + '/description'
-    DEFAULT_CONFIG = {'location': PATH_HOME + '/prjremDat', 'editor': None}
+    DEFAULT_CONFIG = {'location': PATH_HOME + '/prjremDat', 'editor': 'vim'}
     STATUS = {'NO-FILE': 0, 'LOCKED': 1, 'UNLOCKED': 2, 'NEW': 3}
     PSW_GEN_DEFAULT_LEN = 16
 
