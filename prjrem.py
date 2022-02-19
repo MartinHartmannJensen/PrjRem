@@ -107,9 +107,13 @@ class PrjRem:
             self.SEQ_SET_LENGTH = len(self.SEQ_SET) - 1
 
     def sequence(self, length):
+        '''Generate sequence of randomized characters. Restricted by omitted characters in config.'''
+        return ''.join([self.SEQ_SET[self.rng.randint(0, self.SEQ_SET_LENGTH)] for x in range(0, length)])
+
+    def sequenceAll(self, length):
         '''Generate sequence of randomized characters'''
-        seqlist = [self.SEQ_SET[self.rng.randint(0, self.SEQ_SET_LENGTH)] for x in range(0, length)]
-        return ''.join(seqlist)
+        return ''.join([self.CHAR_SET[self.rng.randint(0, self.CHAR_SET_LENGTH)] for x in range(0, length)]
+)
 
     def isLegit(self, string):
         if self.CHAR_SET_RE.fullmatch(string) is None:
@@ -161,8 +165,7 @@ class PrjRem:
     def savePass(self):
         '''Convert passwords to JSON and encrypt with CBC\n
         Sequence() is used for random padding. IV is prepended lastly.'''
-        # BUG switch from sequence function
-        iv = bytearray(self.sequence(16), self.ENC)
+        iv = bytearray(self.sequenceAll(16), self.ENC)
         cipher = AES.new(self.psw, AES.MODE_CBC, iv)
         stream = bytearray(json.dumps(self.passwords), self.ENC)
         stream = stream + bytearray(self.sequence(16 - (len(stream) % 16)), self.ENC)
@@ -459,3 +462,11 @@ class PrjRemCMD(cmd.Cmd):
 
 if __name__ == '__main__':
     PrjRemCMD().cmdloop()
+    # TODO remove when done with
+    # prog = PrjRem()
+    # prog.readConf()
+    # prog.setPsw('t')
+    # for x in range(0, 1000):
+    #     prog.readPass()
+    #     prog.cmd_make('test' + str(x), psw=None, desc=None, length=16)
+    #     prog.savePass()
