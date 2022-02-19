@@ -147,17 +147,13 @@ class PrjRem:
         try:
             cipher = AES.new(self.psw, AES.MODE_CBC, es[:16])
             bs = cipher.decrypt(es[16:]).decode()
-            # Strip padding at end of bytestream before json object marker '}'
-            for i in range(len(bs) - 1, 0, -1):
-                if(bs[i] == '}'):
-                    bs = bs[:i + 1]
-                    break
-
-            self.passwords = json.loads(bs)
+            self.passwords = json.JSONDecoder().raw_decode(bs)[0] # Expect extraneous data (padding) at end
             self.filestatus = self.STATUS['UNLOCKED']
             return 0
+
         except Exception as e:
             self.error = e
+            print(e)
             self.filestatus = self.STATUS['LOCKED']
 
         return 1
