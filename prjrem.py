@@ -35,15 +35,17 @@ class PrjRemLegacy:
 
 
 class PrjRem:
-    SYMBOLS = '!@#$/?;:'
+    SYMBOLS = string.punctuation # Ascii symbols 33 to 126 except ´
     CHAR_SET = '%s%s%s%s' % (SYMBOLS, string.ascii_lowercase, string.digits, string.ascii_uppercase)
     CHAR_SET_LENGTH = len(CHAR_SET) - 1
-    CHAR_SET_RE = re.compile('([%s]|[0-9]|[a-z]|[A-Z])+' % SYMBOLS)
+    CHAR_SET_RE = re.compile('([%s]|[0-9]|[a-z]|[A-Z])+' % re.escape(SYMBOLS))
+    SEQ_SET = CHAR_SET
+    SEQ_SET_LENGTH = CHAR_SET_LENGTH
     ENC = 'utf_8'
     PATH_HOME = Path(__file__).parent.absolute().as_posix() + '/.prjremTest'
     PATH_CONF = PATH_HOME + '/config.json'
     PATH_TEMPFILE = PATH_HOME + '/description'
-    DEFAULT_CONFIG = {'location': PATH_HOME + '/prjremDat', 'editor': 'vim'}
+    DEFAULT_CONFIG = {'location': PATH_HOME + '/prjremDat', 'editor': None, 'omitSymbols': None}
     STATUS = {'NO-FILE': 0, 'LOCKED': 1, 'UNLOCKED': 2, 'NEW': 3}
     PSW_GEN_DEFAULT_LEN = 16
 
@@ -88,9 +90,25 @@ class PrjRem:
         self.psw = KDF.scrypt(psw, "takesawhilebutishardtobruteforce", 32, N=2**20, r=8, p=1)
         return 0
 
+    def getCharset(self):
+        '''Print set of allowed characters and, if any, omitted characters from password generation'''
+        if (self.config['omitSymbols']):
+            omitstr = re.sub(r'[^' + re.escape(self.config['omitSymbols']) + r']', '', self.SYMBOLS)
+            return self.CHAR_SET + '\nOmitted for the password generator: ' + omitstr
+
+        return self.CHAR_SET
+
+    def omitSymbols(self):
+        '''Checks if any symbols needs omitting.
+        Returns charset and length if true (str, num)'''
+        if (self.config['omitSymbols']):
+            symb = re.sub(r'[' + re.escape(self.config['omitSymbols']) + r']', '', self.SYMBOLS)
+            self.SEQ_SET = '%s%s%s%s' % (symb, string.ascii_lowercase, string.digits, string.ascii_uppercase)
+            self.SEQ_SET_LENGTH = len(self.SEQ_SET) - 1
+
     def sequence(self, length):
         '''Generate sequence of randomized characters'''
-        seqlist = [self.CHAR_SET[self.rng.randint(0, self.CHAR_SET_LENGTH)] for x in range(0, length)]
+        seqlist = [self.SEQ_SET[self.rng.randint(0, self.SEQ_SET_LENGTH)] for x in range(0, length)]
         return ''.join(seqlist)
 
     def isLegit(self, string):
@@ -105,6 +123,10 @@ class PrjRem:
             with Path(self.PATH_CONF).open() as f:
                 for k,v in json.load(f).items():
                     self.config[k] = v
+
+            # Handle value "omitSymbols"
+            self.omitSymbols()
+
         else:
             Path(self.PATH_HOME).mkdir(exist_ok=True)
 
@@ -143,6 +165,7 @@ class PrjRem:
     def savePass(self):
         '''Convert passwords to JSON and encrypt with CBC\n
         Sequence() is used for random padding. IV is prepended lastly.'''
+        # BUG switch from sequence function
         iv = bytearray(self.sequence(16), self.ENC)
         cipher = AES.new(self.psw, AES.MODE_CBC, iv)
         stream = bytearray(json.dumps(self.passwords), self.ENC)
@@ -164,6 +187,7 @@ class PrjRem:
         Return 0 on success'''
         self.error = 'Arguments may only contain numbers, letters and the special characters: %s' % self.SYMBOLS
         if self.isLegit(usr) is False:
+            self.error = 'cmd_make did not receive valid usr key\n' + self.error
             return 1
         if psw is None:
             try:
@@ -173,6 +197,7 @@ class PrjRem:
 
             psw = self.sequence(length)
         elif self.isLegit(psw) is False:
+            self.error = 'cmd_make dit not receive valid psw\n' + self.error
             return 1
         
         self.passwords[usr] = [psw, desc]
@@ -323,26 +348,30 @@ class PrjRemCMD(cmd.Cmd):
         Extra arguments will be treated as text to be added to the description.
         To do a longer description use the command "describe".
         '''
-        if len(self.words) > 0:
-            usr = self.words[0]
-            description = ' '.join([str(x) for x in self.words[1:]])
-            if '-m' in self.switches or '-manual' in self.switches:
-                psw = ''
-                while True:
-                    psw = getpass.getpass('Enter password: ' )
-                    if len(psw.strip()) > 0:
-                        break
+        try:
+            if len(self.words) > 0:
+                usr = self.words[0]
+                description = ' '.join([str(x) for x in self.words[1:]])
+                if '-m' in self.switches or '-manual' in self.switches:
+                    psw = ''
+                    while True:
+                        psw = getpass.getpass('Enter password: ' )
+                        if len(psw.strip()) > 0:
+                            break
 
-                if 0 < self.program.cmd_make(usr, psw, description):
-                    print(self.program.error)
+                    if 0 < self.program.cmd_make(usr, psw, description):
+                        print(self.program.error)
 
-            else:
-                l = input('Password length (default %s): ' % self.program.PSW_GEN_DEFAULT_LEN)
-                if 0 < self.program.cmd_make(usr, None, description, l):
-                    print(self.program.error)
+                else:
+                    l = input('Password length (default %s): ' % self.program.PSW_GEN_DEFAULT_LEN)
+                    if 0 < self.program.cmd_make(usr, None, description, l):
+                        print(self.program.error)
 
-            print('%s made!' % usr)
-            pyperclip.copy(self.program.passwords[usr][0])
+                print('%s made!' % usr)
+                pyperclip.copy(self.program.passwords[usr][0])
+
+        except Exception as e:
+            print(e.args)
 
     def do_describe(self, arg):
         '''
@@ -370,6 +399,21 @@ class PrjRemCMD(cmd.Cmd):
         List all "usr" keys in a sorted print.
         '''
         print(self.program.cmd_listToPrint())
+
+    def do_seq(self, arg):
+        '''
+        > seq
+        Sequence. Generate a sequence from available characters.
+        The 'make' command uses the same characterset.
+        Any symbol can be omitted by editing the config file.
+        '''
+        print('Creating sequence from Characterset: ' + self.program.getCharset())
+        l = input('How long?: ')
+        try:
+            print(self.program.sequence(int(l)))
+        except Exception as e:
+            print(e)
+
 
     def do_psw(self, arg):
         '''
