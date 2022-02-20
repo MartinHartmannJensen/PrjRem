@@ -1,49 +1,20 @@
-import json, cmd, pyperclip, secrets, string, re, getpass, subprocess
-from Crypto.Cipher import AES
-from Crypto.Protocol import KDF
+import json, cmd, pyperclip, secrets, string, re, getpass, subprocess, base64
 from pathlib import Path, PureWindowsPath
-
-class PrjRemLegacy:
-    def __init__(self):
-        self.passwords = dict()
-        self.error = 'clean'
-
-    def readVersion2(self, location, psw):
-        '''Open password files from version 2.0\n
-        Return 0 on success'''
-        if psw == '':
-            self.error = 'Abort!'
-            return 1
-
-        psw = ''.join([psw, '0' * (32 - (len(psw) % 16))])
-
-        if not Path(location).exists():
-            return 1
-
-        with Path(location).open(mode='rb') as f:
-            es = f.read()
-
-        try:
-            cipher = AES.new(bytearray(psw, 'utf_8'), AES.MODE_CBC, es[:16])
-            bs = cipher.decrypt(es[16:])
-            self.passwords = json.loads(bs.rstrip(b'0'))
-            return 0
-        except Exception as e:
-            self.error = e
-
-        return 1
-
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 class PrjRem:
-    SYMBOLS = '!@#$/?;:'
+    SYMBOLS = string.punctuation # Ascii symbols 33 to 126 except ´
     CHAR_SET = '%s%s%s%s' % (SYMBOLS, string.ascii_lowercase, string.digits, string.ascii_uppercase)
     CHAR_SET_LENGTH = len(CHAR_SET) - 1
-    CHAR_SET_RE = re.compile('([%s]|[0-9]|[a-z]|[A-Z])+' % SYMBOLS)
+    CHAR_SET_RE = re.compile('([%s]|[0-9]|[a-z]|[A-Z])+' % re.escape(SYMBOLS))
+    SEQ_SET = CHAR_SET
+    SEQ_SET_LENGTH = CHAR_SET_LENGTH
     ENC = 'utf_8'
     PATH_HOME = Path.home().as_posix() + '/.prjrem'
     PATH_CONF = PATH_HOME + '/config.json'
     PATH_TEMPFILE = PATH_HOME + '/description'
-    DEFAULT_CONFIG = {'location': PATH_HOME + '/prjremDat', 'editor': None}
+    DEFAULT_CONFIG = {'location': PATH_HOME + '/prjremDat', 'editor': None, 'omitSymbols': None}
     STATUS = {'NO-FILE': 0, 'LOCKED': 1, 'UNLOCKED': 2, 'NEW': 3}
     PSW_GEN_DEFAULT_LEN = 16
 
@@ -80,18 +51,33 @@ class PrjRem:
         self.error = 'Not a valid directory.\n%s' % ppdir
 
     def setPsw(self, psw):
-        '''Generate a derived key for encryption. Save it to self.psw'''
+        '''Saves to self.psw. Changes password used for the session'''
         if psw == '':
             self.error = 'Abort!'
             return 1
 
-        self.psw = KDF.scrypt(psw, "takesawhilebutishardtobruteforce", 32, N=2**20, r=8, p=1)
+        self.psw = bytes(psw, self.ENC)
         return 0
 
+    def getCharset(self):
+        '''Print set of allowed characters and, if any, omitted characters from password generation'''
+        if (self.config['omitSymbols']):
+            omitstr = re.sub(r'[^' + re.escape(self.config['omitSymbols']) + r']', '', self.SYMBOLS)
+            return self.CHAR_SET + '\nOmitted for the password generator: ' + omitstr
+
+        return self.CHAR_SET
+
+    def omitSymbols(self):
+        '''Checks if any symbols needs omitting.
+        Returns charset and length if true (str, num)'''
+        if (self.config['omitSymbols']):
+            symb = re.sub(r'[' + re.escape(self.config['omitSymbols']) + r']', '', self.SYMBOLS)
+            self.SEQ_SET = '%s%s%s%s' % (symb, string.ascii_lowercase, string.digits, string.ascii_uppercase)
+            self.SEQ_SET_LENGTH = len(self.SEQ_SET) - 1
+
     def sequence(self, length):
-        '''Generate sequence of randomized characters'''
-        seqlist = [self.CHAR_SET[self.rng.randint(0, self.CHAR_SET_LENGTH)] for x in range(0, length)]
-        return ''.join(seqlist)
+        '''Generate sequence of randomized characters. Restricted by omitted characters in config.'''
+        return ''.join([self.SEQ_SET[self.rng.randint(0, self.SEQ_SET_LENGTH)] for x in range(0, length)])
 
     def isLegit(self, string):
         '''Do Regex fullmatch on string'''
@@ -126,6 +112,10 @@ class PrjRem:
             with Path(self.PATH_CONF).open() as f:
                 for k,v in json.load(f).items():
                     self.config[k] = v
+
+            # Handle value "omitSymbols"
+            self.omitSymbols()
+
         else:
             Path(self.PATH_HOME).mkdir(exist_ok=True)
 
@@ -133,6 +123,15 @@ class PrjRem:
         '''Dump dict to JSON file'''
         with Path(self.PATH_CONF).open(mode='w') as f:
             f.write(json.dumps(self.config))
+
+    def deriveKey(self, salt=None):
+        '''Create derived key with scrypt.
+        Returns tuple (key: bytes, salt: bytes)'''
+        if salt is None:
+            salt = self.rng.randbytes(16)
+
+        kdf = Scrypt(salt=salt, length=32, n=2**20, r=8, p=1)
+        return (base64.urlsafe_b64encode(kdf.derive(self.psw)), salt)
 
     def readPass(self):
         '''Open password file and attempt decryption\n
@@ -144,34 +143,28 @@ class PrjRem:
             es = f.read()
 
         try:
-            cipher = AES.new(self.psw, AES.MODE_CBC, es[:16])
-            bs = cipher.decrypt(es[16:]).decode()
-            # Strip padding at end of bytestream before json object marker '}'
-            for i in range(len(bs) - 1, 0, -1):
-                if(bs[i] == '}'):
-                    bs = bs[:i + 1]
-                    break
-
-            self.passwords = json.loads(bs)
+            dk = self.deriveKey(es[:16])[0]
+            bs = Fernet(dk).decrypt(es[16:])
+            self.passwords = json.loads(bs.decode())
             self.filestatus = self.STATUS['UNLOCKED']
             return 0
+
         except Exception as e:
             self.error = e
+            print(e)
             self.filestatus = self.STATUS['LOCKED']
 
         return 1
 
     def savePass(self):
         '''Convert passwords to JSON and encrypt with CBC\n
-        Sequence() is used for random padding. IV is prepended lastly.'''
-        iv = bytearray(self.sequence(16), self.ENC)
-        cipher = AES.new(self.psw, AES.MODE_CBC, iv)
-        stream = bytearray(json.dumps(self.passwords), self.ENC)
-        stream = stream + bytearray(self.sequence(16 - (len(stream) % 16)), self.ENC)
-        es = cipher.encrypt(stream)
+        Salt for key derivation is prepended'''
+        key = self.deriveKey()
+        es = Fernet(key[0]).encrypt(bytes(json.dumps(self.passwords), self.ENC))
+        es = key[1] + es
+
         try:
             with Path(self.config['location']).open(mode='wb') as f:
-                f.write(iv)
                 f.write(es)
         except Exception as e:
             self.error = e
@@ -185,6 +178,7 @@ class PrjRem:
         Return 0 on success'''
         self.error = 'Arguments may only contain numbers, letters and the special characters: %s' % self.SYMBOLS
         if self.isLegit(usr) is False:
+            self.error = 'cmd_make did not receive valid usr key\n' + self.error
             return 1
         if psw is None:
             try:
@@ -194,6 +188,7 @@ class PrjRem:
 
             psw = self.sequence(length)
         elif self.isLegit(psw) is False:
+            self.error = 'cmd_make dit not receive valid psw\n' + self.error
             return 1
         
         self.passwords[usr] = [psw, desc]
@@ -308,23 +303,6 @@ class PrjRemCMD(cmd.Cmd):
             print('Retrieved "%s" and copied password to clipboard.\n--\n%s\n' % (psw[0], psw[2]))
             pyperclip.copy(psw[1])
 
-    def do_openold(self, arg):
-        '''
-        > openold
-        Open version 2 password files.
-        Prompt for password and attempt to read the current path.
-        '''
-        prjl = PrjRemLegacy()
-        psw = getpass.getpass('Type password: ')
-        if 0 < prjl.readVersion2(self.program.config['location'], psw):
-            print('Wrong password. Do "openold" to try again or see "psw" and "loc" to use another file.')
-        else:
-            self.program.setPsw(psw)
-            self.program.passwords = prjl.passwords
-            self.program.filestatus = self.program.STATUS['UNLOCKED']
-            self.setprompt()
-            print('Read successful!\nWARNING: old filepath is still active. Change location if not to overwrite.')
-
     def do_open(self, arg):
         '''
         > open
@@ -344,26 +322,30 @@ class PrjRemCMD(cmd.Cmd):
         Extra arguments will be treated as text to be added to the description.
         To do a longer description use the command "describe".
         '''
-        if len(self.words) > 0:
-            usr = self.words[0]
-            description = ' '.join([str(x) for x in self.words[1:]])
-            if '-m' in self.switches or '-manual' in self.switches:
-                psw = ''
-                while True:
-                    psw = getpass.getpass('Enter password: ' )
-                    if len(psw.strip()) > 0:
-                        break
+        try:
+            if len(self.words) > 0:
+                usr = self.words[0]
+                description = ' '.join([str(x) for x in self.words[1:]])
+                if '-m' in self.switches or '-manual' in self.switches:
+                    psw = ''
+                    while True:
+                        psw = getpass.getpass('Enter password: ' )
+                        if len(psw.strip()) > 0:
+                            break
 
-                if 0 < self.program.cmd_make(usr, psw, description):
-                    print(self.program.error)
+                    if 0 < self.program.cmd_make(usr, psw, description):
+                        print(self.program.error)
 
-            else:
-                l = input('Password length (default %s): ' % self.program.PSW_GEN_DEFAULT_LEN)
-                if 0 < self.program.cmd_make(usr, None, description, l):
-                    print(self.program.error)
+                else:
+                    l = input('Password length (default %s): ' % self.program.PSW_GEN_DEFAULT_LEN)
+                    if 0 < self.program.cmd_make(usr, None, description, l):
+                        print(self.program.error)
 
-            print('%s made!' % usr)
-            pyperclip.copy(self.program.passwords[usr][0])
+                print('%s made!' % usr)
+                pyperclip.copy(self.program.passwords[usr][0])
+
+        except Exception as e:
+            print(e.args)
 
     def do_describe(self, arg):
         '''
@@ -391,6 +373,21 @@ class PrjRemCMD(cmd.Cmd):
         List all "usr" keys in a sorted print.
         '''
         print(self.program.cmd_listToPrint())
+
+    def do_seq(self, arg):
+        '''
+        > seq
+        Sequence. Generate a sequence from available characters.
+        The 'make' command uses the same characterset.
+        Any symbol can be omitted by editing the config file.
+        '''
+        print('Creating sequence from Characterset: ' + self.program.getCharset())
+        l = input('How long?: ')
+        try:
+            print(self.program.sequence(int(l)))
+        except Exception as e:
+            print(e)
+
 
     def do_psw(self, arg):
         '''
