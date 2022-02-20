@@ -94,9 +94,30 @@ class PrjRem:
         return ''.join(seqlist)
 
     def isLegit(self, string):
+        '''Do Regex fullmatch on string'''
         if self.CHAR_SET_RE.fullmatch(string) is None:
             return False
         return True
+
+    def passDump(self):
+        '''JSON format of the passwords dict'''
+        return json.dumps(self.passwords)
+
+    def passLoad(self, jsonStr):
+        '''Try to insert into passwords dict from JSON formatted string'''
+        try:
+            pwds = json.loads(jsonStr)
+            for k,v in pwds.items():
+                if 0 < self.cmd_make(k, v[0], v[1]):
+                    self.error = 'Error parsing: ' + str(k)
+                    return 1
+
+            return 0
+
+        except Exception as e:
+            self.error = 'Error in passLoad\n' + str(e)
+            return 1
+
 
     # Interop
     def readConf(self):
@@ -392,6 +413,23 @@ class PrjRemCMD(cmd.Cmd):
                 self.program.saveConf()
             else:
                 print(self.program.error)
+
+    def do_port(self, arg):
+        '''
+        > port [im | ex]
+        Prompts to Import or Export a JSON formatted string containing password data.
+        Dataformat: {"usrkey": ["password", "description"]}'''
+        self.do_help('port')
+        if 'im' in self.words:
+            self.program.error = 'Abort!'
+            dat = getpass.getpass('\nInsert password data (leave empty to abort): ')
+            if dat == '' or self.program.passLoad(dat):
+                print(self.program.error)
+
+        elif 'ex' in self.words:
+            if 'y' == input('\nRetrieve password dictionary to clipboard? (y/N): ').lower():
+                pyperclip.copy(self.program.passDump())
+                print('Copied.')
 
     def do_exit(self, e):
         '''
